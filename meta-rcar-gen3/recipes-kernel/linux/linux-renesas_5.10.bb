@@ -31,6 +31,10 @@ SRC_URI:append = " \
     file://touch.cfg \
     ${@oe.utils.conditional("USE_AVB", "1", " file://usb-video-class.cfg", "", d)} \
 "
+SRC_URI:append = " \
+    file://0001-mmc-renesas_sdhi-populate-renesas_sdhi_reset-in-mmc_.patch \
+    file://0002-mmc-renesas_sdhi-Add-reset-flow-for-tuning-error.patch \
+"
 
 # Add module.lds
 SRC_URI:append = " \

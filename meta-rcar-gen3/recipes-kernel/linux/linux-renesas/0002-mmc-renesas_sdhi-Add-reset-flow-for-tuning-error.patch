@@ -1,0 +1,97 @@
+From 6ebe4d0168adf3e7819f5ee5d938fb2d3a6e1088 Mon Sep 17 00:00:00 2001
+From: Vinh Nguyen <vinh.nguyen.xz@renesas.com>
+Date: Fri, 27 Sep 2024 03:01:22 +0700
+Subject: [PATCH 2/2] mmc: renesas_sdhi: Add reset flow for tuning error
+
+As updated in the H/W Errata for R-Car Series 3rd Generation, the
+following steps will be executed before IPMMU unmapping in the event
+of an error, in order to prevent IPMMU errors. Those steps are:
+- Reset SDHI controller
+- Abort DMA
+There are also additional steps to be executed but not required before
+unmapping:
+- Set bus width
+- Set clock
+
+Because IPMMU unmapping is implemented in a tasklet, usleep_range()
+is replaced by mdelay() when resetting SDHI controller. These changes
+are applied only if tuning is error in order not to impact the current
+implementation as mdelay() will cause CPU wasting time.
+
+Moreover, setting clock requires mutex locking which is not allowed in
+a tasklet. So this step will be called in the
+tmio_mmc_finish_request() function.
+
+Signed-off-by: Vinh Nguyen <vinh.nguyen.xz@renesas.com>
+---
+ drivers/mmc/host/renesas_sdhi_internal_dmac.c | 16 ++++++++++++++++
+ drivers/mmc/host/tmio_mmc_core.c              | 18 ++++++++++++++++--
+ 2 files changed, 32 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/mmc/host/renesas_sdhi_internal_dmac.c b/drivers/mmc/host/renesas_sdhi_internal_dmac.c
+index bfc1ba3a8305..f7791c2ed690 100644
+--- a/drivers/mmc/host/renesas_sdhi_internal_dmac.c
++++ b/drivers/mmc/host/renesas_sdhi_internal_dmac.c
+@@ -264,6 +264,22 @@ static bool renesas_sdhi_internal_dmac_complete(struct tmio_mmc_host *host)
+ 		dir = DMA_TO_DEVICE;
+ 
+ 	renesas_sdhi_internal_dmac_enable_dma(host, false);
++	/*
++	 * As updated in the H/W Errata for R-Car Series 3rd Generation,
++	 * before unmapping, if error occurs, execute the following steps:
++	 * - Reset SDHI controller
++	 * - Abort DMA
++	 * There are also additional steps to be executed but not required
++	 * before unmapping:
++	 * - Set bus width
++	 * - Set clock
++	 * Because setting clock requires mutex locking which is not
++	 * allowed in a tasklet. So this step will be called in the
++	 * tmio_mmc_finish_request() function.
++	 */
++	if (host->data && host->data->error)
++		host->reset(host);
++
+ 	dma_unmap_sg(&host->pdev->dev, host->sg_ptr, host->sg_len, dir);
+ 
+ 	if (dir == DMA_FROM_DEVICE)
+diff --git a/drivers/mmc/host/tmio_mmc_core.c b/drivers/mmc/host/tmio_mmc_core.c
+index 3b273da1ae00..e6a108544af5 100644
+--- a/drivers/mmc/host/tmio_mmc_core.c
++++ b/drivers/mmc/host/tmio_mmc_core.c
+@@ -211,9 +211,15 @@ static void tmio_mmc_reset(struct tmio_mmc_host *host)
+ {
+ 	/* FIXME - should we set stop clock reg here */
+ 	sd_ctrl_write16(host, CTL_RESET_SD, 0x0000);
+-	usleep_range(10000, 11000);
++	if (in_interrupt())
++		mdelay(11);
++	else
++		usleep_range(10000, 11000);
+ 	sd_ctrl_write16(host, CTL_RESET_SD, 0x0001);
+-	usleep_range(10000, 11000);
++	if (in_interrupt())
++		mdelay(11);
++	else
++		usleep_range(10000, 11000);
+ 
+ 	tmio_mmc_abort_dma(host);
+ 
+@@ -878,6 +884,14 @@ static void tmio_mmc_finish_request(struct tmio_mmc_host *host)
+ 	spin_unlock_irqrestore(&host->lock, flags);
+ 
+ 	if (mrq->cmd->error || (mrq->data && mrq->data->error)) {
++		/*
++		 * Set clock if mmc_request data is error. This is one of
++		 * additional steps to be executed if an error is detected
++		 * in the renesas_sdhi_internal_dmac_complete() function.
++		 */
++		if (mrq->data)
++			host->set_clock(host, host->mmc->ios.clock);
++
+ 		tmio_mmc_ack_mmc_irqs(host, TMIO_MASK_IRQ); /* Clear all */
+ 		tmio_mmc_abort_dma(host);
+ 	}
+-- 
+2.25.1
+

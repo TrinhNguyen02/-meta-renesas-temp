@@ -1,0 +1,75 @@
+From 1369d0887bad4734cbf5a070178c8b7b16f0895e Mon Sep 17 00:00:00 2001
+From: Vinh Nguyen <vinh.nguyen.xz@renesas.com>
+Date: Thu, 26 Sep 2024 23:34:21 +0700
+Subject: [PATCH 1/2] mmc: renesas_sdhi: populate renesas_sdhi_reset in mmc_ops
+
+After previous refactorization, we can now populate mmc_ops directly
+but renesas_sdhi reset is still set in the layer inbetween.
+This commit moves renesas_sdhi reset to mmc_ops and hook
+host->reset() to tmio_mmc_reset().
+
+Signed-off-by: Vinh Nguyen <vinh.nguyen.xz@renesas.com>
+---
+ drivers/mmc/host/renesas_sdhi_core.c | 5 +++--
+ drivers/mmc/host/tmio_mmc_core.c     | 7 ++++---
+ 2 files changed, 7 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/mmc/host/renesas_sdhi_core.c b/drivers/mmc/host/renesas_sdhi_core.c
+index 7d0ce0ecf8cc..1eaa961f87a1 100644
+--- a/drivers/mmc/host/renesas_sdhi_core.c
++++ b/drivers/mmc/host/renesas_sdhi_core.c
+@@ -577,8 +577,9 @@ static void renesas_sdhi_scc_reset(struct tmio_mmc_host *host, struct renesas_sd
+ }
+ 
+ /* only populated for TMIO_MMC_MIN_RCAR2 */
+-static void renesas_sdhi_reset(struct tmio_mmc_host *host)
++static void renesas_sdhi_reset(struct mmc_host *mmc)
+ {
++	struct tmio_mmc_host *host = mmc_priv(mmc);
+ 	struct renesas_sdhi *priv = host_to_priv(host);
+ 	u16 val;
+ 
+@@ -1063,7 +1064,7 @@ int renesas_sdhi_probe(struct platform_device *pdev,
+ 			renesas_sdhi_start_signal_voltage_switch;
+ 		host->sdcard_irq_setbit_mask = TMIO_STAT_ALWAYS_SET_27;
+ 		host->sdcard_irq_mask_all = TMIO_MASK_ALL_RCAR2;
+-		host->reset = renesas_sdhi_reset;
++		host->ops.hw_reset = renesas_sdhi_reset;
+ 	} else {
+ 		host->sdcard_irq_mask_all = TMIO_MASK_ALL;
+ 	}
+diff --git a/drivers/mmc/host/tmio_mmc_core.c b/drivers/mmc/host/tmio_mmc_core.c
+index 155e898a933c..3b273da1ae00 100644
+--- a/drivers/mmc/host/tmio_mmc_core.c
++++ b/drivers/mmc/host/tmio_mmc_core.c
+@@ -217,8 +217,8 @@ static void tmio_mmc_reset(struct tmio_mmc_host *host)
+ 
+ 	tmio_mmc_abort_dma(host);
+ 
+-	if (host->reset)
+-		host->reset(host);
++	if (host->ops.hw_reset)
++		host->ops.hw_reset(host->mmc);
+ 
+ 	sd_ctrl_write32_as_16_and_16(host, CTL_IRQ_MASK, host->sdcard_irq_mask_all);
+ 	host->sdcard_irq_mask = host->sdcard_irq_mask_all;
+@@ -1013,7 +1013,7 @@ static void tmio_mmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
+ 		tmio_mmc_power_off(host);
+ 		/* For R-Car Gen2+, we need to reset SDHI specific SCC */
+ 		if (host->pdata->flags & TMIO_MMC_MIN_RCAR2)
+-			host->reset(host);
++			host->ops.hw_reset(mmc);
+ 		host->set_clock(host, 0);
+ 		break;
+ 	case MMC_POWER_UP:
+@@ -1248,6 +1248,7 @@ int tmio_mmc_host_probe(struct tmio_mmc_host *_host)
+ 		_host->sdcard_irq_mask_all = TMIO_MASK_ALL;
+ 
+ 	_host->set_clock(_host, 0);
++	_host->reset = tmio_mmc_reset;
+ 	tmio_mmc_reset(_host);
+ 
+ 	if (_host->native_hotplug)
+-- 
+2.25.1
+
